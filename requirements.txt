@@ -1,0 +1,4 @@
+streamlit
+numpy
+plotly
+onnxruntime==1.17.3    # se der erro de GLIBC, tente 1.16.3
