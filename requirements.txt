@@ -1,4 +1,4 @@
 streamlit
-numpy
+numpy==1.26.4
 plotly
-onnxruntime==1.17.3    # se der erro de GLIBC, tente 1.16.3
+onnxruntime==1.18.0    # se der erro de GLIBC, tente 1.16.3

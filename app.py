@@ -17,6 +17,21 @@ st.set_page_config(
     layout="wide",
 )
 
+st.markdown("""
+<style>
+  /* Aumenta a largura da sidebar */
+  [data-testid="stSidebar"] {
+      width: 360px !important;      /* experimente 360–420px */
+      min-width: 360px !important;
+  }
+  /* dá um respiro no conteúdo principal */
+  .block-container {
+      padding-left: 1.2rem;
+      padding-right: 1.2rem;
+  }
+</style>
+""", unsafe_allow_html=True)
+
 # --------------------------------------------------------------
 # Utilitário: localizar primeiro arquivo existente (logo/foto)
 # --------------------------------------------------------------
@@ -256,17 +271,40 @@ if submit:
 
     with colB:
         fig = go.Figure()
-        fig.add_trace(go.Bar(x=["Não-Lesão", "Lesão"], y=[prob_neg, prob_pos],
-                             text=[f"{prob_neg:.1%}", f"{prob_pos:.1%}"], textposition="auto"))
-        fig.add_hline(y=LIMIAR, line_dash="dash", annotation_text=f"Limiar {LIMIAR:.4f}")
-        fig.update_layout(yaxis=dict(range=[0, 1]), title="Probabilidades")
+
+        # cores: verde p/ Não-Lesão, vermelho p/ Lesão
+        colors = ["#2ecc71", "#e74c3c"]  # [não-lesão, lesão]
+
+        fig.add_trace(go.Bar(
+            x=["Não-Lesão", "Lesão"],
+            y=[prob_neg, prob_pos],
+            marker_color=colors,
+            text=[f"{prob_neg:.1%}", f"{prob_pos:.1%}"],
+            textposition="auto"
+        ))
+
+        # linha de limiar
+        fig.add_hline(
+            y=LIMIAR, line_dash="dash", line_color="#222",
+            annotation_text=f"Limiar {LIMIAR:.4f}",
+            annotation_position="top left"
+        )
+
+        fig.update_layout(
+            yaxis=dict(range=[0, 1], title="Probabilidade"),
+            xaxis=dict(title="Classe"),
+            bargap=0.25,
+            plot_bgcolor="rgba(0,0,0,0)",
+            height=380
+        )
+
         st.plotly_chart(fig, use_container_width=True)
 
-    with st.expander("Dados enviados", expanded=False):
-        st.json({
-            "gender": int(gender),
-            "years_age (norm 0–1)": round(normalize_age(age_years), 3),
-            **{k: int(v) for k, v in zip(ORDERED_FEATURES[2:], features[0, 2:].astype(int).tolist())}
-        })
+        with st.expander("Dados enviados", expanded=False):
+            st.json({
+                "gender": int(gender),
+                "years_age (norm 0–1)": round(normalize_age(age_years), 3),
+                **{k: int(v) for k, v in zip(ORDERED_FEATURES[2:], features[0, 2:].astype(int).tolist())}
+            })
 
-    st.caption("Aviso: ferramenta de apoio à decisão; não substitui julgamento clínico.")
+        st.caption("Aviso: ferramenta de apoio à decisão; não substitui julgamento clínico.")
