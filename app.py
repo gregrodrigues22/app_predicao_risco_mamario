@@ -131,6 +131,33 @@ except Exception as e:
     st.error(f"Falha ao carregar o modelo: {e}")
     st.stop()
 
+def predict_prob_pos(sess, input_name, output_names, x: np.ndarray) -> float:
+    """Retorna probabilidade da classe positiva (lesão) para o vetor x (shape: (1, n))."""
+    outs = sess.run(output_names, {input_name: x})
+    prob_pos = None
+
+    if "probabilities" in output_names:
+        p = outs[output_names.index("probabilities")]
+        try:
+            parr = np.array(p)
+            if parr.ndim == 2 and parr.shape[1] == 2:
+                prob_pos = float(parr[0, 1])
+            elif parr.ndim == 2 and parr.shape[1] == 1:
+                prob_pos = float(parr[0, 0])
+        except Exception:
+            pass
+        if prob_pos is None and isinstance(p, list) and len(p) and isinstance(p[0], dict):
+            d = p[0]
+            prob_pos = float(d.get(1, d.get("1", 0.0)))
+
+    if prob_pos is None:
+        # fallback se só houver label
+        lbl = outs[output_names.index("label")] if "label" in output_names else outs[0]
+        cls = int(np.array(lbl).ravel()[0])
+        prob_pos = 1.0 if cls == 1 else 0.0
+
+    return float(prob_pos)
+
 # ------------------------- Schema -----------------------------
 # ATENÇÃO: a ordem precisa ser exatamente a do treinamento
 ORDERED_FEATURES = [
@@ -152,12 +179,13 @@ st.subheader("Dados do Paciente")
 c1, c2 = st.columns(2)
 with c1:
     age_years = st.slider("Idade (anos)", 0, 100, 50)
-    gender = st.radio("Sexo", options=[0, 1],
-                      format_func=lambda v: "Feminino (0)" if v == 0 else "Masculino (1)",
-                      horizontal=True)
+    gender_label = st.radio("Sexo", options=["Feminino", "Masculino"], horizontal=True)
+    gender = 0 if gender_label == "Feminino" else 1
 
-def risk_radio(label: str, value: int = 0):
-    return st.radio(label, options=[0, 1], index=value, horizontal=True)
+def risk_radio(label: str, value: int = 0) -> int:
+    """Mostra 'Não/Sim' para o usuário e retorna 0/1 para o modelo."""
+    escolha = st.radio(label, options=["Não", "Sim"], index=value, horizontal=True)
+    return 1 if escolha == "Sim" else 0
 
 cols = st.columns(2)
 with cols[0]:
@@ -308,3 +336,94 @@ if submit:
             })
 
         st.caption("Aviso: ferramenta de apoio à decisão; não substitui julgamento clínico.")
+
+    # =================== EXPLICAÇÃO LOCAL (tipo SHAP) ===================
+    st.markdown("### Explicação da predição (aproximação local)")
+
+    # baseline: para binárias usamos 0; para idade normalizada usamos 0.50 (neutro)
+    BASELINES = dict(
+        gender=0.0,            # 0 = feminino
+        years_age=0.50         # neutro (ajuste se preferir)
+    )
+    # demais (fatores) ficam 0 por padrão
+
+    # índice de cada feature no vetor
+    feat_idx = {name: i for i, name in enumerate(ORDERED_FEATURES)}
+
+    # probabilidade original
+    p_ref = predict_prob_pos(sess, INPUT_NAME, OUTPUT_NAMES, features)
+
+    # calcula efeito marginal de cada feature: Δp = p_original - p_com_feature_no_baseline
+    deltas = []
+    x_work = features.copy()
+    for name in ORDERED_FEATURES:
+        j = feat_idx[name]
+        old_val = float(x_work[0, j])
+
+        # define baseline (idade 0.50, resto 0.0)
+        base = BASELINES.get(name, 0.0)
+
+        if old_val == base:
+            # se já está no baseline, contribuição ~0
+            deltas.append((name, 0.0))
+        else:
+            x_work[0, j] = base
+            p_base = predict_prob_pos(sess, INPUT_NAME, OUTPUT_NAMES, x_work)
+            delta = p_ref - p_base   # positivo: essa feature AUMENTOU o risco
+            deltas.append((name, float(delta)))
+            x_work[0, j] = old_val   # restaura
+
+    # ordena por impacto absoluto (top 8 para visual)
+    deltas_sorted = sorted(deltas, key=lambda t: abs(t[1]), reverse=True)
+    top = deltas_sorted[:8]
+
+    # nomes bonitinhos para mostrar
+    pretty = {
+        "gender": "Sexo (1=Masculino)",
+        "years_age": "Idade (normalizada)",
+        "fator_ca_ovario_final": "Hist. CA ovário (fam/pessoal)",
+        "fator_hf_mama_final": "Hist. fam. CA mama",
+        "fator_genital_final": "Fator genital",
+        "fator_obesidade_final": "Obesidade",
+        "fator_sobrepeso_final": "Sobrepeso",
+        "fator_etilismo_final": "Etilismo",
+        "fator_tabagismo_final": "Tabagismo",
+        "fator_alimentacao_final": "Alimentação inadequada",
+        "fator_sedentarismo_final": "Sedentarismo",
+        "fator_radiacao_final": "Exposição à radiação",
+        "fator_anticoncepcao_final": "Uso de anticoncepção",
+        "fator_dislipidemia_final": "Dislipidemia",
+        "fator_diabetes_final": "Diabetes",
+        "fator_hipertensao_final": "Hipertensão",
+        "fator_gestacao_final": "Gestação",
+        "fator_mental_final": "Transtorno mental",
+        "fator_neoplasias_final": "Outras neoplasias",
+        "fator_menarca_final": "Menarca precoce",
+    }
+
+    # prepara dados para o gráfico horizontal
+    labels = [pretty.get(n, n) for n, _ in top][::-1]            # invertido p/ barra de cima = maior
+    values = [v for _, v in top][::-1]
+
+    # cores por sinal (verde reduz risco, vermelho aumenta)
+    bar_colors = ["#2ecc71" if v < 0 else "#e74c3c" for v in values]
+
+    fig_exp = go.Figure()
+    fig_exp.add_trace(go.Bar(
+        y=labels, x=values, orientation="h",
+        marker_color=bar_colors,
+        hovertemplate="%{y}: Δp = %{x:.3f}<extra></extra>"
+    ))
+    fig_exp.update_layout(
+        title="Contribuição por variável (Δ prob. de Lesão quando removida)",
+        xaxis_title="Δ probabilidade (positivo = aumenta risco)",
+        yaxis_title="Variável",
+        bargap=0.25, height=420, plot_bgcolor="rgba(0,0,0,0)"
+    )
+    st.plotly_chart(fig_exp, use_container_width=True)
+
+    st.caption(
+        "Metodologia: efeito marginal local. Para cada variável, estimamos a variação na probabilidade de "
+        "Lesão ao levar a variável para um baseline (binárias → 0; idade → 0.50) mantendo as demais fixas. "
+        "Isso fornece uma explicação **local** similar ao SHAP, porém mais simples e rápida."
+    )
